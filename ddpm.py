@@ -50,7 +50,8 @@ class MLP(nn.Module):
         x2_emb = self.input_mlp2(x[:, 1])
         t_emb = self.time_mlp(t)
         x = torch.cat((x1_emb, x2_emb, t_emb), dim=-1)
-        x = self.joint_mlp(x)
+        device = next(self.joint_mlp.parameters()).device
+        x = self.joint_mlp(x.to(device))
         return x
 
 
@@ -86,24 +87,13 @@ class NoiseScheduler():
         # required for q_posterior
         self.posterior_mean_coef1 = self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
         self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1. - self.alphas_cumprod)
-    
-    def to(self, device: str):
-        self.betas = self.betas.to(device)
-        self.alphas_cumprod = self.alphas_cumprod.to(device)
-        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
-        self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
-        self.sqrt_inv_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
-        self.sqrt_inv_alphas_cumprod_minus_one = self.sqrt_inv_alphas_cumprod_minus_one.to(device)
-        self.posterior_mean_coef1 = self.posterior_mean_coef1.to(device)
-        self.posterior_mean_coef2 = self.posterior_mean_coef2.to(device)
-        return self
 
     def reconstruct_x0(self, x_t, t, noise):
         s1 = self.sqrt_inv_alphas_cumprod[t]
         s2 = self.sqrt_inv_alphas_cumprod_minus_one[t]
         s1 = s1.reshape(-1, 1)
         s2 = s2.reshape(-1, 1)
-        return s1 * x_t - s2 * noise
+        return s1 * x_t - s2 * noise.cpu()
 
     def q_posterior(self, x_0, x_t, t):
         s1 = self.posterior_mean_coef1[t]
@@ -128,7 +118,7 @@ class NoiseScheduler():
 
         variance = 0
         if t > 0:
-            noise = torch.randn_like(model_output)
+            noise = torch.randn_like(model_output.cpu())
             variance = (self.get_variance(t) ** 0.5) * noise
 
         pred_prev_sample = pred_prev_sample + variance
@@ -225,6 +215,7 @@ def _train(config) -> Session:
     frames = []
     losses = []
 
+    model.to(config.device)
     outdir = f"exps/{config.experiment_name}"
 
     writer = SummaryWriter('runs/' + config.experiment_name)
@@ -245,7 +236,7 @@ def _train(config) -> Session:
 
                 data_noisy = noise_scheduler.add_noise(data_GT, noise, timesteps)
                 noise_pred = model(data_noisy, timesteps)
-                loss = F.mse_loss(noise_pred, noise)
+                loss = F.mse_loss(noise_pred.cpu(), noise)
                 loss.backward(loss)
 
                 nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -328,6 +319,7 @@ def _eval(config) -> Session:
         print("Loading model...")
         model = MLP()
         model.load_state_dict(torch.load(config.load_model))
+        model.to(config.device)
 
         f = "eval.png"
         print(f"Evaluating figure {f}")
