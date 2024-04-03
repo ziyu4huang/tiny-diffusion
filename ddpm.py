@@ -190,10 +190,13 @@ def _build_model(config: omegaconf.DictConfig) -> Tuple:
 
     return (model, noise_scheduler, optimizer)
 
-if __name__ == "__main__":
+class Session:
+    def __init__(self) -> None:
+        pass
+        
 
-    #config = omegaconf.OmegaConf.create(vars(_parse_args))
-    config = _parse_args()
+def _train(config) -> Session:
+    session = Session()
 
     dataset = datasets.get_dataset(config.dataset)
     dataloader = DataLoader(
@@ -226,7 +229,8 @@ if __name__ == "__main__":
 
     writer = SummaryWriter('runs/' + config.experiment_name)
 
-    if not config.load_model:
+
+    if True:
         print("Training model...")
         for epoch in range(config.num_epochs):
             model.train()
@@ -293,7 +297,34 @@ if __name__ == "__main__":
 
         print("Saving frames...")
         np.save(f"{outdir}/frames.npy", frames)
+
+
+
+    return session
+
+def _eval(config) -> Session:
+    session = Session()
+    
+    if False:
+        model, noise_scheduler, optimizer = _build_model(config)
     else:
+        model = MLP(
+            hidden_size=config.hidden_size,
+            hidden_layers=config.hidden_layers,
+            emb_size=config.embedding_size,
+            time_emb=config.time_embedding,
+            input_emb=config.input_embedding)
+
+        noise_scheduler = NoiseScheduler(
+            num_timesteps=config.num_timesteps,
+            beta_schedule=config.beta_schedule)
+
+    outdir = f"exps/{config.experiment_name}"
+
+    writer = SummaryWriter('runs/' + config.experiment_name)
+
+
+    if True:
         print("Loading model...")
         model = MLP()
         model.load_state_dict(torch.load(config.load_model))
@@ -324,9 +355,26 @@ if __name__ == "__main__":
                 plt.close()
         
 
-        t_steps = torch.randint(
-            0, noise_scheduler.num_timesteps, (sample.shape[0],)).long()
+    return session
 
-        writer.add_graph(model, (sample, t_steps), use_strict_trace=False)
+
+if __name__ == "__main__":
+
+    #config = omegaconf.OmegaConf.create(vars(_parse_args))
+    config = _parse_args()
+
+    session = None
+
+    if not config.load_model:
+        sesison = _train(config)
+    else:
+        session = _eval(config)
+
+    # trace may cause TracerWarning
+
+    # t_steps = torch.randint(
+    #     0, noise_scheduler.num_timesteps, (sample.shape[0],)).long()
+
+    # writer.add_graph(model, (sample, t_steps), use_strict_trace=False)
 
 
