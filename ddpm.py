@@ -1,5 +1,6 @@
 import argparse
 import os
+from typing import Tuple
 
 import torch
 from torch import nn
@@ -7,6 +8,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
+import omegaconf
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -84,6 +86,17 @@ class NoiseScheduler():
         # required for q_posterior
         self.posterior_mean_coef1 = self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
         self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1. - self.alphas_cumprod)
+    
+    def to(self, device: str):
+        self.betas = self.betas.to(device)
+        self.alphas_cumprod = self.alphas_cumprod.to(device)
+        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
+        self.sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        self.sqrt_inv_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        self.sqrt_inv_alphas_cumprod_minus_one = self.sqrt_inv_alphas_cumprod_minus_one.to(device)
+        self.posterior_mean_coef1 = self.posterior_mean_coef1.to(device)
+        self.posterior_mean_coef2 = self.posterior_mean_coef2.to(device)
+        return self
 
     def reconstruct_x0(self, x_t, t, noise):
         s1 = self.sqrt_inv_alphas_cumprod[t]
@@ -153,34 +166,57 @@ def _parse_args():
     parser.add_argument("--input_embedding", type=str, default="sinusoidal", choices=["sinusoidal", "learnable", "linear", "identity"])
     parser.add_argument("--save_images_step", type=int, default=1)
     parser.add_argument("--load_model", type=str)
+    parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--eval_save_image", action='store_true')
     config = parser.parse_args()
     return config
 
-
-if __name__ == "__main__":
-
-    config = _parse_args()
-
-    dataset = datasets.get_dataset(config.dataset)
-    dataloader = DataLoader(
-        dataset, batch_size=config.train_batch_size, shuffle=True, drop_last=True)
-
+def _build_model(config: omegaconf.DictConfig) -> Tuple:
     model = MLP(
         hidden_size=config.hidden_size,
         hidden_layers=config.hidden_layers,
         emb_size=config.embedding_size,
         time_emb=config.time_embedding,
-        input_emb=config.input_embedding)
+        input_emb=config.input_embedding).to(config.device)
 
     noise_scheduler = NoiseScheduler(
         num_timesteps=config.num_timesteps,
-        beta_schedule=config.beta_schedule)
+        beta_schedule=config.beta_schedule).to(config.device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
     )
+
+    return (model, noise_scheduler, optimizer)
+
+if __name__ == "__main__":
+
+    #config = omegaconf.OmegaConf.create(vars(_parse_args))
+    config = _parse_args()
+
+    dataset = datasets.get_dataset(config.dataset)
+    dataloader = DataLoader(
+        dataset, batch_size=config.train_batch_size, shuffle=True, drop_last=True)
+    
+    if False:
+        model, noise_scheduler, optimizer = _build_model(config)
+    else:
+        model = MLP(
+            hidden_size=config.hidden_size,
+            hidden_layers=config.hidden_layers,
+            emb_size=config.embedding_size,
+            time_emb=config.time_embedding,
+            input_emb=config.input_embedding)
+
+        noise_scheduler = NoiseScheduler(
+            num_timesteps=config.num_timesteps,
+            beta_schedule=config.beta_schedule)
+
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=config.learning_rate,
+        )
 
     global_step = 0
     frames = []
