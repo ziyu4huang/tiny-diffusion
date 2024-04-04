@@ -50,7 +50,7 @@ class MLP(nn.Module):
         x2_emb = self.input_mlp2(x[:, 1])
         t_emb = self.time_mlp(t)
         x = torch.cat((x1_emb, x2_emb, t_emb), dim=-1)
-        device = next(self.joint_mlp.parameters()).device
+        device = next(self.parameters()).device
         x = self.joint_mlp(x.to(device))
         return x
 
@@ -158,32 +158,14 @@ def _parse_args():
     parser.add_argument("--load_model", type=str)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--eval_save_image", action='store_true')
+    parser.add_argument("--detail_progress", action='store_true')
     config = parser.parse_args()
     return config
-
-def _build_model(config: omegaconf.DictConfig) -> Tuple:
-    model = MLP(
-        hidden_size=config.hidden_size,
-        hidden_layers=config.hidden_layers,
-        emb_size=config.embedding_size,
-        time_emb=config.time_embedding,
-        input_emb=config.input_embedding).to(config.device)
-
-    noise_scheduler = NoiseScheduler(
-        num_timesteps=config.num_timesteps,
-        beta_schedule=config.beta_schedule).to(config.device)
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=config.learning_rate,
-    )
-
-    return (model, noise_scheduler, optimizer)
 
 class Session:
     def __init__(self) -> None:
         pass
-        
+        self.summary_writer = None
 
 def _train(config) -> Session:
     session = Session()
@@ -192,24 +174,21 @@ def _train(config) -> Session:
     dataloader = DataLoader(
         dataset, batch_size=config.train_batch_size, shuffle=True, drop_last=True)
     
-    if False:
-        model, noise_scheduler, optimizer = _build_model(config)
-    else:
-        model = MLP(
-            hidden_size=config.hidden_size,
-            hidden_layers=config.hidden_layers,
-            emb_size=config.embedding_size,
-            time_emb=config.time_embedding,
-            input_emb=config.input_embedding)
+    model = MLP(
+        hidden_size=config.hidden_size,
+        hidden_layers=config.hidden_layers,
+        emb_size=config.embedding_size,
+        time_emb=config.time_embedding,
+        input_emb=config.input_embedding)
 
-        noise_scheduler = NoiseScheduler(
-            num_timesteps=config.num_timesteps,
-            beta_schedule=config.beta_schedule)
+    noise_scheduler = NoiseScheduler(
+        num_timesteps=config.num_timesteps,
+        beta_schedule=config.beta_schedule)
 
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=config.learning_rate,
-        )
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+    )
 
     global_step = 0
     frames = []
@@ -219,14 +198,18 @@ def _train(config) -> Session:
     outdir = f"exps/{config.experiment_name}"
 
     writer = SummaryWriter('runs/' + config.experiment_name)
-
-
-    if True:
+    session.summary_writer = writer
+    # config.detail_progress = False
+    if True: # Training loop
         print("Training model...")
+        if not config.detail_progress:
+            master_pb = tqdm(total=config.num_epochs)
+            master_pb.set_description("Training")
         for epoch in range(config.num_epochs):
             model.train()
-            progress_bar = tqdm(total=len(dataloader))
-            progress_bar.set_description(f"Epoch {epoch}")
+            if config.detail_progress:
+                progress_bar = tqdm(total=len(dataloader))
+                progress_bar.set_description(f"Epoch {epoch}")
             for step, batch in enumerate(dataloader):
                 data_GT = batch[0]
                 noise = torch.randn(data_GT.shape)
@@ -243,36 +226,44 @@ def _train(config) -> Session:
                 optimizer.step()
                 optimizer.zero_grad()
 
-                progress_bar.update(1)
                 logs = {"loss": loss.detach().item(), "step": global_step}
                 losses.append(loss.detach().item())
-                progress_bar.set_postfix(**logs)
+                if config.detail_progress:
+                    progress_bar.update(1)
+                    progress_bar.set_postfix(**logs)
                 global_step += 1
-            progress_bar.close()
+            if config.detail_progress:
+                progress_bar.close()
+            else:
+                master_pb.update(1)
 
             if epoch % config.save_images_step == 0 or epoch == config.num_epochs - 1:
                 # generate data with the model to later visualize the learning process
                 model.eval()
                 sample = torch.randn(config.eval_batch_size, 2)
                 timesteps = list(range(len(noise_scheduler)))[::-1]
-                for i, t in enumerate(tqdm(timesteps)):
+                for i, t in enumerate(timesteps):
                     t = torch.from_numpy(np.repeat(t, config.eval_batch_size)).long()
                     with torch.no_grad():
                         residual = model(sample, t)
                     sample = noise_scheduler.step(residual, t[0], sample)
                 frames.append(sample.numpy())
+        if not config.detail_progress:
+            master_pb.close()
         
+    if True: # save model pth
         ####################################
         os.makedirs(outdir, exist_ok=True)
         f = f"{outdir}/model.pth"
         print(f"Saving model... {f}")
         torch.save(model.state_dict(), f)
 
+    if True: # write images from frames
         ####################################
         imgdir = f"{outdir}/images"
         print(f"Saving images... {imgdir}")
         os.makedirs(imgdir, exist_ok=True)
-        frames = np.stack(frames)
+        # frames = np.stack(frames) # strange , seems not necessary
         xmin, xmax = -6, 6
         ymin, ymax = -6, 6
         for i, frame in enumerate(frames):
@@ -289,31 +280,26 @@ def _train(config) -> Session:
         print("Saving frames...")
         np.save(f"{outdir}/frames.npy", frames)
 
-
-
     return session
 
 def _eval(config) -> Session:
     session = Session()
     
-    if False:
-        model, noise_scheduler, optimizer = _build_model(config)
-    else:
-        model = MLP(
-            hidden_size=config.hidden_size,
-            hidden_layers=config.hidden_layers,
-            emb_size=config.embedding_size,
-            time_emb=config.time_embedding,
-            input_emb=config.input_embedding)
+    model = MLP(
+        hidden_size=config.hidden_size,
+        hidden_layers=config.hidden_layers,
+        emb_size=config.embedding_size,
+        time_emb=config.time_embedding,
+        input_emb=config.input_embedding)
 
-        noise_scheduler = NoiseScheduler(
-            num_timesteps=config.num_timesteps,
-            beta_schedule=config.beta_schedule)
+    noise_scheduler = NoiseScheduler(
+        num_timesteps=config.num_timesteps,
+        beta_schedule=config.beta_schedule)
 
     outdir = f"exps/{config.experiment_name}"
 
     writer = SummaryWriter('runs/' + config.experiment_name)
-
+    session.summary_writer = writer
 
     if True:
         print("Loading model...")
@@ -346,19 +332,16 @@ def _eval(config) -> Session:
                 plt.savefig(f"{imgdir}/{i:04}.png")
                 plt.close()
         
-
     return session
 
 
 if __name__ == "__main__":
 
-    #config = omegaconf.OmegaConf.create(vars(_parse_args))
     config = _parse_args()
-
-    session = None
+    config = omegaconf.OmegaConf.create(vars(config))
 
     if not config.load_model:
-        sesison = _train(config)
+        session = _train(config)
     else:
         session = _eval(config)
 
@@ -369,4 +352,5 @@ if __name__ == "__main__":
 
     # writer.add_graph(model, (sample, t_steps), use_strict_trace=False)
 
+    session.summary_writer.close()
 
